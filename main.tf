@@ -3,11 +3,11 @@ module "vpc" {
   source = "terraform-aws-modules/vpc/aws"
 
   name = "${terraform.workspace}-storage-vpc-sb"
-  cidr = "10.0.0.0/16"
+  cidr = "10.245.16.0/21"
 
   azs                     = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1], ]
-  private_subnets         = ["10.0.1.0/24", "10.0.3.0/24"]
-  public_subnets          = ["10.0.2.0/24", "10.0.4.0/24"]
+  private_subnets         = ["10.245.16.0/23", "10.245.18.0/23"]
+  public_subnets          = ["10.245.20.0/25", "10.245.20.128/25"]
   map_public_ip_on_launch = true
 
   enable_nat_gateway = true
@@ -28,6 +28,34 @@ module "vpc" {
     # long-term-test = "true"
   }
 }
+
+# resource "aws_route" "route_account_a_to_b0" {
+#   destination_cidr_block    = "10.0.0.0/16"
+#   vpc_peering_connection_id = "pcx-016667cb611b23b1f"
+#   for_each                  = toset(module.vpc.private_route_table_ids)
+#   route_table_id            = each.key
+# }
+#
+# resource "aws_route" "route_account_a_to_b1" {
+#   destination_cidr_block    = "10.1.0.0/16"
+#   vpc_peering_connection_id = "pcx-016667cb611b23b1f"
+#   for_each                  = toset(module.vpc.private_route_table_ids)
+#   route_table_id            = each.key
+# }
+#
+# resource "aws_route" "route_account_a_to_b2" {
+#   destination_cidr_block    = "10.10.0.0/16"
+#   vpc_peering_connection_id = "pcx-016667cb611b23b1f"
+#   for_each                  = toset(module.vpc.private_route_table_ids)
+#   route_table_id            = each.key
+# }
+#
+# resource "aws_route" "route_account_a_to_b3" {
+#   destination_cidr_block    = "10.11.0.0/16"
+#   vpc_peering_connection_id = "pcx-016667cb611b23b1f"
+#   for_each                  = toset(module.vpc.private_route_table_ids)
+#   route_table_id            = each.key
+# }
 
 module "apigatewayendpoint" {
   count                  = var.enable_apigateway == 1 && var.mgmt_nodes > 0 ? 1 : 0
@@ -302,6 +330,15 @@ resource "aws_security_group" "storage_nodes_sg" {
     protocol        = "icmp"
     security_groups = [aws_security_group.mgmt_node_sg.id]
     description     = "allow ICMP Echo"
+  }
+
+
+  ingress {
+    protocol    = "icmp"
+    from_port   = -1
+    to_port     = -1 # allow all types
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "allow all ICMP from all"
   }
 
   ingress {
@@ -691,8 +728,9 @@ resource "aws_instance" "storage_nodes" {
   vpc_security_group_ids = [aws_security_group.storage_nodes_sg.id]
   subnet_id              = module.vpc.private_subnets[local.az_index]
   iam_instance_profile   = aws_iam_instance_profile.inst_profile.name
+  disable_api_stop       = true
   root_block_device {
-    volume_size = 45
+    volume_size = 80
   }
   tags = {
     Name = "${terraform.workspace}-storage-${each.value + 1}"
@@ -763,7 +801,7 @@ resource "aws_volume_attachment" "attach_sn" {
 # can be used for testing caching nodes
 resource "aws_instance" "extra_nodes" {
   count                  = var.extra_nodes
-  ami                    = local.ami_map[var.extra_nodes_arch][var.region] # RHEL 9
+  ami                    = "ami-075e58cb73a7742df" #AL2-arm
   instance_type          = var.extra_nodes_instance_type
   key_name               = local.selected_key_name
   vpc_security_group_ids = [aws_security_group.extra_nodes_sg.id]
@@ -781,3 +819,9 @@ sudo sysctl -w vm.nr_hugepages=${var.nr_hugepages}
 cat /proc/meminfo | grep -i hug
 EOF
 }
+
+
+# creating variant in shopify: creating variant user errors in query: ,Location does not exist.: inventoryQuantities,0
+
+# location doesn't exist
+
