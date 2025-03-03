@@ -1,6 +1,6 @@
 #!/bin/bash
 
-KEY="$HOME/.ssh/simplyblock-ohio.pem"
+KEY="$HOME/.ssh/simplyblock-us-east-2.pem"
 
 print_help() {
     echo "Usage: $0 [options]"
@@ -29,50 +29,89 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-SECRET_VALUE=$(terraform output -raw secret_value)
-KEY_NAME=$(terraform output -raw key_name)
 
-ssh_dir="$HOME/.ssh"
 
-if [ ! -d "$ssh_dir" ]; then
-    mkdir -p "$ssh_dir"
-    echo "Directory $ssh_dir created."
-else
-    echo "Directory $ssh_dir already exists."
-fi
-
-if [[ -n "$SECRET_VALUE" ]]; then
-    KEY="$HOME/.ssh/$KEY_NAME"
-    if [ -f "$HOME/.ssh/$KEY_NAME" ]; then
-        echo "the ssh key: ${KEY} already exits on local"
-    else
-        echo "$SECRET_VALUE" >"$KEY"
-        chmod 400 "$KEY"
-    fi
-else
-    echo "Failed to retrieve secret value. Falling back to default key."
-fi
-
-BASTION_IP=$(terraform output -raw bastion_public_ip)
-mnodes=($(terraform output -raw extra_nodes_public_ips))
-
-mnodes_private_ips=$(terraform output -raw extra_nodes_private_ips)
 IFS=' ' read -ra mnodes_private_ips <<<"$mnodes_private_ips"
-
-storage_private_ips=$(terraform output -raw storage_private_ips)
-sec_storage_private_ips=$(terraform output -raw sec_storage_private_ips)
+BASTION_IP=$BASTION_IP
+mnodes=$K3S_MNODES
+echo "mgmt_private_ips: ${mnodes}"
+IFS=' ' read -ra mnodes <<<"$mnodes"
+storage_private_ips=$STORAGE_PRIVATE_IPS
+sec_storage_private_ips=$SEC_STORAGE_PRIVATE_IPS
 
 echo "::set-output name=KEY::$KEY"
 echo "::set-output name=extra_node_ip::${mnodes[0]}"
 
 
-ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "
-sudo yum install -y fio nvme-cli;
+echo "cleaning up old K8s cluster..."
+
+
+
+for node_ip in ${mnodes[@]}; do
+    echo "SSH into $node_ip and executing commands"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no \
+        -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p root@${BASTION_IP}" \
+        root@${node_ip} "
+        if command -v k3s &>/dev/null; then
+            echo "Uninstalling k3s..."
+            /usr/local/bin/k3s-uninstall.sh
+        fi
+
+        # Remove installed packages
+        echo "Removing installed packages..."
+        sudo yum remove -y fio nvme-cli make golang
+
+        sleep 10 
+    "
+done
+
+for node_ip in ${storage_private_ips}; do
+    echo "SSH into $node_ip and executing commands"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no \
+        -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p root@${BASTION_IP}" \
+        root@${node_ip} "
+        if command -v k3s &>/dev/null; then
+            echo "Uninstalling k3s..."
+            /usr/local/bin/k3s-uninstall.sh
+        fi
+
+        # Remove installed packages
+        echo "Removing installed packages..."
+        sudo yum remove -y fio nvme-cli make golang
+
+        sleep 10 
+    "
+done
+
+for node_ip in ${sec_storage_private_ips}; do
+    echo "SSH into $node_ip and executing commands"
+    ssh -i "$KEY" -o StrictHostKeyChecking=no \
+        -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p root@${BASTION_IP}" \
+        root@${node_ip} "
+        if command -v k3s &>/dev/null; then
+            echo "Uninstalling k3s..."
+            /usr/local/bin/k3s-uninstall.sh
+        fi
+
+        # Remove installed packages
+        echo "Removing installed packages..."
+        sudo yum remove -y fio nvme-cli make golang
+
+        sleep 10 
+    "
+done
+
+echo "bootstrapping k3s cluster..."
+
+ssh -i $KEY -o StrictHostKeyChecking=no \
+    -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i $KEY -W %h:%p root@${BASTION_IP}" \
+    root@${mnodes[0]} "
+sudo yum install -y fio nvme-cli bc;
 sudo modprobe nvme-tcp
 sudo modprobe nbd
 total_memory_kb=\$(grep MemTotal /proc/meminfo | awk '{print \$2}')
 total_memory_mb=\$((total_memory_kb / 1024))
-hugepages=\$((total_memory_mb / 4 ))
+hugepages=\$(echo \"\$total_memory_mb * 0.3 / 1\" | bc)
 sudo sysctl -w vm.nr_hugepages=\$hugepages
 sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
 sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
@@ -82,7 +121,7 @@ sudo /usr/local/bin/k3s kubectl taint nodes --all node-role.kubernetes.io/master
 sudo /usr/local/bin/k3s kubectl get node
 sudo yum install -y pciutils
 lspci
-sudo chown ec2-user:ec2-user /etc/rancher/k3s/k3s.yaml
+sudo chown root:root /etc/rancher/k3s/k3s.yaml
 sudo yum install -y make golang
 echo 'nvme-tcp' | sudo tee /etc/modules-load.d/nvme-tcp.conf
 echo 'nbd' | sudo tee /etc/modules-load.d/nbd.conf
@@ -90,19 +129,19 @@ echo \"vm.nr_hugepages=\$hugepages\" | sudo tee /etc/sysctl.d/hugepages.conf
 sudo sysctl --system
 "
 
-MASTER_NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${mnodes_private_ips[0]} | awk '{print \$1}'")
-ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl label nodes $MASTER_NODE_NAME type=simplyblock-cache --overwrite"
+MASTER_NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${mnodes[0]} | awk '{print \$1}'")
+ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl label nodes $MASTER_NODE_NAME type=simplyblock-cache --overwrite"
 
-TOKEN=$(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "sudo cat /var/lib/rancher/k3s/server/node-token")
+TOKEN=$(ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "sudo cat /var/lib/rancher/k3s/server/node-token")
 
 for ((i=1; i<${#mnodes[@]}; i++)); do
-    ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[${i}]} "
-    sudo yum install -y fio nvme-cli;
+    ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[${i}]} "
+    sudo yum install -y fio nvme-cli bc;
     sudo modprobe nvme-tcp
     sudo modprobe nbd
     total_memory_kb=\$(grep MemTotal /proc/meminfo | awk '{print \$2}')
     total_memory_mb=\$((total_memory_kb / 1024))
-    hugepages=\$((total_memory_mb / 4 / 2))
+    hugepages=\$(echo \"\$total_memory_mb * 0.3 / 1\" | bc)
     sudo sysctl -w vm.nr_hugepages=\$hugepages
     sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
     sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
@@ -118,8 +157,8 @@ for ((i=1; i<${#mnodes[@]}; i++)); do
     sudo sysctl --system
     "
 
-    NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${mnodes_private_ips[${i}]} | awk '{print \$1}'")
-    ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-cache --overwrite"
+    NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${mnodes[${i}]} | awk '{print \$1}'")
+    ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-cache --overwrite"
 done
 
 if [ "$K8S_SNODE" == "true" ]; then
@@ -129,15 +168,16 @@ if [ "$K8S_SNODE" == "true" ]; then
         echo ""
 
         ssh -i "$KEY" -o StrictHostKeyChecking=no \
-            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p ec2-user@${BASTION_IP}" \
-            ec2-user@${node} "
-            sudo yum install -y fio nvme-cli;
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p root@${BASTION_IP}" \
+            root@${node} "
+            sudo yum install -y fio nvme-cli bc;
             sudo modprobe nvme-tcp
             sudo modprobe nbd
             total_memory_kb=\$(grep MemTotal /proc/meminfo | awk '{print \$2}')
+
             total_memory_mb=\$((total_memory_kb / 1024))
-            hugepages=\$((total_memory_mb / 4 / 2))
-    
+            hugepages=\$(echo \"\$total_memory_mb * 0.3 / 1\" | bc)
+
             sudo sysctl -w vm.nr_hugepages=\$hugepages
             sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
             sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
@@ -153,8 +193,8 @@ if [ "$K8S_SNODE" == "true" ]; then
             sudo sysctl --system
         "
 
-        NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${node} | awk '{print \$1}'")
-        ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-storage-plane --overwrite"
+        NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${node} | awk '{print \$1}'")
+        ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-storage-plane --overwrite"
     done
 
     for node in ${sec_storage_private_ips[@]}; do
@@ -163,14 +203,14 @@ if [ "$K8S_SNODE" == "true" ]; then
         echo ""
 
         ssh -i "$KEY" -o StrictHostKeyChecking=no \
-            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p ec2-user@${BASTION_IP}" \
-            ec2-user@${node} "
-            sudo yum install -y fio nvme-cli;
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -i \"$KEY\" -W %h:%p root@${BASTION_IP}" \
+            root@${node} "
+            sudo yum install -y fio nvme-cli bc;
             sudo modprobe nvme-tcp
             sudo modprobe nbd
             total_memory_kb=\$(grep MemTotal /proc/meminfo | awk '{print \$2}')
             total_memory_mb=\$((total_memory_kb / 1024))
-            hugepages=\$((total_memory_mb / 4 / 2))
+            hugepages=\$(echo \"\$total_memory_mb * 0.3 / 1\" | bc)
 
             sudo sysctl -w vm.nr_hugepages=\$hugepages
             sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
@@ -187,7 +227,7 @@ if [ "$K8S_SNODE" == "true" ]; then
             sudo sysctl --system
         "
 
-        NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${node} | awk '{print \$1}'")
-        ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-storage-plane-reserve --overwrite"
+        NODE_NAME=$(ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl get nodes -o wide | grep -w ${node} | awk '{print \$1}'")
+        ssh -i $KEY -o StrictHostKeyChecking=no root@${mnodes[0]} "kubectl label nodes $NODE_NAME type=simplyblock-storage-plane-reserve --overwrite"
     done
 fi
