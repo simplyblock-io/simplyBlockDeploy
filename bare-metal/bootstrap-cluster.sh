@@ -2,7 +2,6 @@
 set -exo pipefail
 
 KEY="$HOME/.ssh/simplyblock-us-east-2.pem"
-nr_hugepages=$NR_HUGEPAGES
 BASTION_IP=$BASTION_IP
 GRAFANA_ENDPOINT=$GRAFANA_ENDPOINT
 mnodes=$MNODES
@@ -79,6 +78,8 @@ IOBUF_LARGE_BUFFSIZE=""
 LOG_DEL_INTERVAL=""
 METRICS_RETENTION_PERIOD=""
 SBCLI_CMD="${SBCLI_CMD:-sbctl}"
+SBCLI_BRANCH="${SBCLI_BRANCH:-}"
+NR_HUGEPAGES="${NR_HUGEPAGES:-}"
 SBCLI_INSTALL_SOURCE="${SBCLI_BRANCH:+git+https://github.com/simplyblock-io/sbcli.git@${SBCLI_BRANCH}}"
 SBCLI_INSTALL_SOURCE="${SBCLI_INSTALL_SOURCE:-${SBCLI_CMD}}"
 SPDK_IMAGE=""
@@ -374,13 +375,18 @@ setup_docker_proxy() {
 }
 
 install_sbcli_on_node() {
-    # claim hugepages as early as possible
-    if [[ -n "$2" ]]; then
+    local node_ip="$1"
+
+    # sbcli 25.x still expects hugepages to be pre-claimed on storage nodes.
+    # Newer releases claim them themselves, so NR_HUGEPAGES is not required there.
+    if [[ -n "$2" && "$SBCLI_BRANCH" == 25.* ]]; then
+        if [[ -z "$NR_HUGEPAGES" ]]; then
+            echo "SBCLI_BRANCH=$SBCLI_BRANCH requires NR_HUGEPAGES to be set" >&2
+            exit 1
+        fi
         echo "running on storage node: $node_ip. claiming hugepages..."
         ssh_exec "$node_ip" "sudo sysctl -w vm.nr_hugepages=${NR_HUGEPAGES}"
     fi
-
-    local node_ip="$1"
     ssh_exec "$node_ip" "$(declare -f setup_docker_proxy); setup_docker_proxy $PROXY_URL $INSECURE_URL"
 
     echo "Installing sbcli on node: $node_ip"
